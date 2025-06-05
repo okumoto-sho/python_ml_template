@@ -59,22 +59,19 @@ def generate_flow_matching_mp4(flow_data_dict, filename="flow_matching.mp4"):
     plt.close(fig)
 
 
-def generate_gaussian_mixture(n_samples: int, n_clusters: int, means, variances):
+def generate_gaussian_mixture(n_samples: int, means, variances):
     """
     Generate a 2D Gaussian Mixture Model.
 
     Args:
         n_samples (int): Total number of samples to generate.
-        n_clusters (int): Number of clusters in the mixture model.
         means (list of tuples): List of mean values for each cluster (e.g., [(x1, y1), (x2, y2), ...]).
         variances (list of floats): List of variances for each cluster.
 
     Returns:
         torch.Tensor: Generated samples as a tensor of shape (n_samples, 2).
     """
-    assert (
-        len(means) == n_clusters
-    ), "Number of means must match the number of clusters."
+    n_clusters = len(means)
     assert (
         len(variances) == n_clusters
     ), "Number of variances must match the number of clusters."
@@ -83,7 +80,7 @@ def generate_gaussian_mixture(n_samples: int, n_clusters: int, means, variances)
     samples_per_cluster = n_samples // n_clusters
 
     for i in range(n_clusters):
-        cluster_samples = torch.tensor(means[i]) + torch.sqrt(
+        cluster_samples = torch.Tensor(means[i]) + torch.sqrt(
             torch.tensor(variances[i])
         ) * torch.randn(samples_per_cluster, 2)
         samples.append(cluster_samples)
