@@ -3,13 +3,13 @@ import torch
 
 from python_ml_examples.generative_models.flow_matching.velocity_models import Mlp
 from python_ml_examples.generative_models.flow_matching.schedulers import (
-    LinearScheduler,
+    CosineScheduler,
 )
 from python_ml_examples.generative_models.flow_matching.flow_matching import (
     FlowMatching,
 )
 from python_ml_examples.generative_models.flow_matching.utils import (
-    generate_flow_matching_mp4,
+    save_2d_flow_matching_mp4,
     generate_gaussian_mixture,
 )
 
@@ -21,7 +21,7 @@ dim = 2
 model = Mlp(n_dim=dim).cuda()
 
 # Choose one of the schedulers to use
-scheduler = LinearScheduler()
+scheduler = CosineScheduler()
 
 # Create flow matching model and train it on the moon dataset
 flow_matching = FlowMatching(
@@ -55,10 +55,15 @@ x_1 = (
     .float()
     .cuda()
 )
-flow_matching.train(x_1, parameter_updating_steps=10000)
-path = flow_matching.sample_path(500, num_ode_steps=100)
+for step in range(10000):
+    x_0 = torch.randn_like(x_1).cuda()
+    loss, current_steps = flow_matching.train_one_step(x_0, x_1)
+    print(f"Loss: {loss:.4f}, Current Steps: {current_steps}")
+
+x_0 = torch.randn(n_batch_samples, dim).cuda()
+path = flow_matching.sample_path_from_source(x_0, num_ode_steps=100)
 
 # Save generated path as mp4 file
 paths = {}
 paths["LinearScheduler"] = path
-generate_flow_matching_mp4(paths, filename="flow_matching_moon.mp4")
+save_2d_flow_matching_mp4(paths, filename="flow_matching_moon.mp4")
