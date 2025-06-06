@@ -26,7 +26,7 @@ flags.DEFINE_string(
     "initial_checkpoint_path", None, "Path to the initial checkpoint to load."
 )
 flags.DEFINE_string("dataset_root_dir", "./dataset", "Root directory for the dataset.")
-flags.DEFINE_integer("batch_size", 64, "Batch size for training.")
+flags.DEFINE_integer("batch_size", 256, "Batch size for training.")
 flags.DEFINE_integer("checkpoint_save_interval", 500, "Interval to save checkpoints.")
 flags.DEFINE_integer("num_epochs", 500, "Number of epochs to train the model.")
 flags.DEFINE_integer(
@@ -47,7 +47,22 @@ def main(_):
     data_loader = DataLoader(dataset, batch_size=FLAGS.batch_size, shuffle=True)
 
     # prepare velocity model, scheduler, and flow matching instance
-    velocity_model = Unet2D(in_channels=3, out_channels=3).cuda()
+    velocity_model = Unet2D(
+        in_channels=3,
+        out_channels=3,
+        down_block_types=[
+            "DownBlock2D",
+            "AttnDownBlock2D",
+            "AttnDownBlock2D",
+            "AttnDownBlock2D",
+        ],
+        up_block_types=[
+            "AttnUpBlock2D",
+            "AttnUpBlock2D",
+            "AttnUpBlock2D",
+            "UpBlock2D",
+        ],
+    ).cuda()
     scheduler = LinearScheduler()
     flow_matching = FlowMatching(
         model=velocity_model, scheduler=scheduler, learning_rate=FLAGS.learning_rate
