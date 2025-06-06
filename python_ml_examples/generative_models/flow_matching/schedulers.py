@@ -4,7 +4,7 @@ import abc
 from numpy import pi
 
 
-class Scheduler(abc.ABC):
+class Scheduler(abc.ABC, torch.nn.Module):
     def sample(self, x_0: torch.Tensor, x_1: torch.Tensor, t: torch.Tensor):
         """
         Sample a point from the scheduler.
@@ -20,6 +20,9 @@ class Scheduler(abc.ABC):
 
 
 class LinearScheduler(Scheduler):
+    def __init__(self):
+        super().__init__()
+
     def sample(self, x_0: torch.Tensor, x_1: torch.Tensor, t: torch.Tensor):
         alpha_t = t.view(-1, *[1] * (x_0.ndim - 1))
         sigma_t = (1 - t).view(-1, *[1] * (x_0.ndim - 1))
@@ -28,7 +31,10 @@ class LinearScheduler(Scheduler):
         return sigma_t * x_0 + alpha_t * x_1, d_sigma_t * x_0 + d_alpha_t * x_1
 
 
-class CosineScheduler:
+class CosineScheduler(Scheduler):
+    def __init__(self):
+        super().__init__()
+
     def sample(self, x_0: torch.Tensor, x_1: torch.Tensor, t: torch.Tensor):
         alpha_t = torch.sin(pi / 2 * t).view(-1, *[1] * (x_0.ndim - 1))
         sigma_t = torch.cos(pi / 2 * t).view(-1, *[1] * (x_0.ndim - 1))
@@ -37,7 +43,10 @@ class CosineScheduler:
         return sigma_t * x_0 + alpha_t * x_1, d_sigma_t * x_0 + d_alpha_t * x_1
 
 
-class LinearVariancePreservingScheduler:
+class LinearVariancePreservingScheduler(Scheduler):
+    def __init__(self):
+        super().__init__()
+
     def sample(self, x_0: torch.Tensor, x_1: torch.Tensor, t: torch.Tensor):
         alpha_t = t.view(-1, *[1] * (x_0.ndim - 1))
         sigma_t = torch.sqrt(1 - t**2).view(-1, *[1] * (x_0.ndim - 1))
@@ -46,8 +55,9 @@ class LinearVariancePreservingScheduler:
         return sigma_t * x_0 + alpha_t * x_1, d_sigma_t * x_0 + d_alpha_t * x_1
 
 
-class PolynomialConvexScheduler:
+class PolynomialConvexScheduler(Scheduler):
     def __init__(self, n: int = 2):
+        super().__init__()
         self.n = n
 
     def sample(self, x_0: torch.Tensor, x_1: torch.Tensor, t: torch.Tensor):

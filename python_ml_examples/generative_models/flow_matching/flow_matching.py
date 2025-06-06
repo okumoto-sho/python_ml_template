@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 
 from typing import NamedTuple
 from python_ml_examples.generative_models.flow_matching.velocity_models import (
@@ -14,7 +15,7 @@ class TrainStats(NamedTuple):
     current_train_steps: int
 
 
-class FlowMatching:
+class FlowMatching(nn.Module):
     def __init__(
         self,
         model: FlowVelocityModel,
@@ -24,6 +25,7 @@ class FlowMatching:
         loss_fn: str = "MSELoss",
         device: str = "cuda",
     ):
+        super().__init__()
         self.model = model
         self.scheduler = scheduler
         self.optimizer: torch.optim.Optimizer = getattr(torch.optim, optimizer)(
