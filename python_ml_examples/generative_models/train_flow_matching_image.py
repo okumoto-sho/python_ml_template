@@ -27,7 +27,7 @@ flags.DEFINE_string(
 )
 flags.DEFINE_string("dataset_root_dir", "./dataset", "Root directory for the dataset.")
 flags.DEFINE_integer("batch_size", 256, "Batch size for training.")
-flags.DEFINE_integer("checkpoint_save_interval", 500, "Interval to save checkpoints.")
+flags.DEFINE_integer("checkpoint_save_interval", 20, "Interval to save checkpoints.")
 flags.DEFINE_integer("num_epochs", 500, "Number of epochs to train the model.")
 flags.DEFINE_integer(
     "visualization_interval", 500, "Interval for visualizing generated images."
@@ -100,12 +100,12 @@ def main(_):
                     writer.add_image("Generated Images", grid, current_steps)
                     writer.add_scalar("Train Loss", loss, current_steps)
 
-            if current_steps % FLAGS.checkpoint_save_interval == 0:
-                torch.save(
-                    flow_matching.state_dict(),
-                    f"{FLAGS.checkpoints_dir}/flow_matching_checkpoint_epoch_{epoch + 1}_step_{current_steps}.pth",
-                )
-                print(f"Checkpoint saved at epoch {epoch + 1}, step {current_steps}.")
+        if epoch % FLAGS.checkpoint_save_interval == 0:
+            torch.save(
+                flow_matching.state_dict(),
+                f"{FLAGS.checkpoints_dir}/flow_matching_checkpoint_epoch_{epoch + 1}_step_{current_steps}.pth",
+            )
+            print(f"Checkpoint saved at epoch {epoch + 1}, step {current_steps}.")
 
 
 if __name__ == "__main__":
