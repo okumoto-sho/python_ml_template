@@ -195,3 +195,12 @@ cython_debug/
 
 # lock files
 poetry.lock
+
+# runs
+runs/*
+
+# checkpoints
+checkpoints/
+
+# dataset
+dataset/
