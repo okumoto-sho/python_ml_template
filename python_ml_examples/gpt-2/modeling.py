@@ -1,6 +1,11 @@
 import code
 import time
 import torch
+import math
+
+
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
 import torch.nn as nn
 import sys
 import math
@@ -8,6 +13,10 @@ import tiktoken
 
 from dataclasses import dataclass
 from torch.nn import functional as F
+
+seed = 42
+torch.manual_seed(seed)
+torch.cuda.manual_seed(seed)
 
 
 @dataclass
@@ -202,6 +211,26 @@ class GPT(nn.Module):
 
         return model
 
+    def configure_optimizer(self, weight_decay: float, learning_rate: float):
+        param_dict = {pn: p for pn, p in self.named_parameters() if p.requires_grad}
+
+        decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
+        no_decay_params = [p for n, p in param_dict.items() if p.dim() < 2]
+
+        optim_groups = [
+            {"params": decay_params, "weight_decay": weight_decay},
+            {"params": no_decay_params, "weight_decay": 0.0},
+        ]
+        num_decay_params = sum(p.numel() for p in decay_params)
+        num_no_decay_params = sum(p.numel() for p in no_decay_params)
+        print(
+            f"num decay params: {num_decay_params}, num no decay params: {num_no_decay_params}"
+        )
+        optimizer = torch.optim.AdamW(
+            optim_groups, learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=True
+        )
+        return optimizer
+
 
 class DataLoaderLite:
     def __init__(self, B, T):
@@ -228,6 +257,25 @@ class DataLoaderLite:
         return x, y
 
 
+def cosine_scheduler_lr(
+    steps: int,
+    warmup_steps: int = 10,
+    max_steps: int = 50,
+    max_lr=6e-4,
+    min_lr_ratio: float = 0.1,
+):
+    min_lr = min_lr_ratio * max_lr
+    if steps < warmup_steps:
+        return (1 + steps) / warmup_steps * max_lr
+    if steps > max_steps:
+        return min_lr
+
+    coeff = 0.5 * (
+        1 + math.cos(math.pi * (steps - warmup_steps) / (max_steps - warmup_steps))
+    )
+    return min_lr + coeff * (max_lr - min_lr)
+
+
 # model = GPT.from_pretrained("gpt2")
 model = GPT(GPTConfig())
 model.to("cuda")
@@ -237,23 +285,29 @@ B = 5
 T = 512
 train_data_loader = DataLoaderLite(B=B, T=T)
 n_epochs = 50
-optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+optimizer = model.configure_optimizer(weight_decay=0.1, learning_rate=6e-4)
 for i in range(50):
+    t_0 = time.time()
     x, y = train_data_loader.next_batch()
     x = x.to("cuda")
     y = y.to("cuda")
+    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
     optimizer.zero_grad()
 
-    t_0 = time.time()
     with torch.autocast("cuda", torch.float16):
         logits, loss = model(x, y)
     loss.backward()
+
+    lr = cosine_scheduler_lr(i)
+    for param_group in optimizer.param_groups:
+        param_group["lr"] = lr
+
     optimizer.step()
     torch.cuda.synchronize()
     t_1 = time.time()
 
     print(
-        f"step {i + 1}, loss: {loss.item():.4f}, time: {(t_1 - t_0) * 1000} tokens/sec: {B * T / (t_1 - t_0):.2f}"
+        f"step {i + 1}, loss: {loss.item():.4f}, time: {(t_1 - t_0) * 1000} tokens/sec: {B * T / (t_1 - t_0):.2f}, lr: {lr} norm: {norm}"
     )
 
 sys.exit(0)
