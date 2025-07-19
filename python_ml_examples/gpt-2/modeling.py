@@ -285,29 +285,36 @@ B = 5
 T = 512
 train_data_loader = DataLoaderLite(B=B, T=T)
 n_epochs = 50
+grad_acum_steps = 10
 optimizer = model.configure_optimizer(weight_decay=0.1, learning_rate=6e-4)
-for i in range(50):
+scaler = torch.GradScaler()
+for i in range(n_epochs):
     t_0 = time.time()
     x, y = train_data_loader.next_batch()
     x = x.to("cuda")
     y = y.to("cuda")
-    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
     optimizer.zero_grad()
 
-    with torch.autocast("cuda", torch.float16):
-        logits, loss = model(x, y)
-    loss.backward()
+    for grad_acum_step in range(grad_acum_steps):
+        with torch.autocast("cuda", torch.float16):
+            logits, loss = model(x, y)
+            loss = loss / grad_acum_steps
+        scaler.scale(loss).backward()
+
+    scaler.unscale_(optimizer)
+    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
     lr = cosine_scheduler_lr(i)
     for param_group in optimizer.param_groups:
         param_group["lr"] = lr
 
-    optimizer.step()
+    scaler.step(optimizer)
+    scaler.update()
     torch.cuda.synchronize()
     t_1 = time.time()
 
     print(
-        f"step {i + 1}, loss: {loss.item():.4f}, time: {(t_1 - t_0) * 1000} tokens/sec: {B * T / (t_1 - t_0):.2f}, lr: {lr} norm: {norm}"
+        f"step {i + 1}, loss: {loss.item():.4f}, time: {(t_1 - t_0) * 1000} tokens/sec: {B * T * grad_acum_steps / (t_1 - t_0):.2f}, lr: {lr} norm: {norm}"
     )
 
 sys.exit(0)
