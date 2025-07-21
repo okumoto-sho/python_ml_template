@@ -1,11 +1,13 @@
-import code
+import dataclasses
 import time
 import torch
 import math
+import os
 
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
+import torch.distributed as dist
 import torch.nn as nn
 import sys
 import math
@@ -13,6 +15,78 @@ import tiktoken
 
 from dataclasses import dataclass
 from torch.nn import functional as F
+
+
+@dataclasses.dataclass
+class DDPInfo:
+    is_ddp: bool
+    local_rank: int
+    world_size: int
+    is_master_process: bool
+    device: torch.device
+
+
+def create_logger():
+    import logging
+    import sys
+    from colorama import Fore, Style
+
+    class ColorFormatter(logging.Formatter):
+        def format(self, record):
+            level_color = {
+                "DEBUG": Fore.BLUE,
+                "INFO": Fore.GREEN,
+                "WARNING": Fore.YELLOW,
+                "ERROR": Fore.RED,
+                "CRITICAL": Fore.MAGENTA,
+            }.get(record.levelname, Fore.WHITE)
+            reset = Style.RESET_ALL
+            record.msg = f"{level_color}{record.msg}{reset}"
+            return super().format(record)
+
+    logger = logging.getLogger("gpt2")
+    logger.setLevel(logging.INFO)
+    handler = logging.StreamHandler(sys.stdout)
+    formatter = ColorFormatter("%(asctime)s - %(levelname)s - %(message)s")
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    return logger
+
+
+logger = create_logger()
+
+
+def init_ddp():
+    env = os.environ
+    is_ddp = "RANK" in env and "WORLD_SIZE" in env
+    if is_ddp:
+        local_rank = int(env["LOCAL_RANK"])
+        world_size = int(env["WORLD_SIZE"])
+        is_master_process = local_rank == 0
+        device = torch.device(f"cuda:{local_rank}")
+        dist.init_process_group(backend="nccl", world_size=world_size, rank=local_rank)
+        logger.info(
+            f"Initialized DDP with local_rank: {local_rank}, world_size: {world_size} on device: {device}"
+        )
+    else:
+        local_rank = 0
+        world_size = 1
+        is_master_process = True
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        logger.info("Running in single process mode, not using DDP.")
+
+    if is_ddp:
+        dist.barrier()  # ensure all processes are synchronized before proceeding
+
+    torch.cuda.set_device(local_rank)
+    return DDPInfo(
+        is_ddp=is_ddp,
+        local_rank=local_rank,
+        world_size=world_size,
+        is_master_process=is_master_process,
+        device=device,
+    )
+
 
 seed = 42
 torch.manual_seed(seed)
@@ -233,22 +307,25 @@ class GPT(nn.Module):
 
 
 class DataLoaderLite:
-    def __init__(self, B, T):
-        self.B, self.T = B, T
+    def __init__(self, B, T, local_rank, world_size):
+        self.B, self.T, self.local_rank, self.world_size = B, T, local_rank, world_size
         with open("./python_ml_examples/gpt-2/input.txt", "r") as f:
             self.text = f.read()
 
         enc = tiktoken.get_encoding("gpt2")
         self.tokens = enc.encode(self.text)
-        self.current_index = 0
+        self.current_index = self.B * self.T * self.local_rank
 
     def next_batch(self):
-        batch_size = self.B * self.T
-        if self.current_index + (batch_size + 1) >= len(self.tokens):
-            self.current_index = 0
+        chunk_size = self.B * self.T
+        batch_size = self.B * self.T * self.world_size
+        if self.current_index + (self.local_rank * chunk_size + 1) >= len(self.tokens):
+            self.current_index = self.B * self.T * self.local_rank
 
-        x = self.tokens[self.current_index : self.current_index + batch_size]
-        y = self.tokens[self.current_index + 1 : self.current_index + batch_size + 1]
+        start_idx = self.current_index
+        end_idx = self.current_index + chunk_size
+        x = self.tokens[start_idx:end_idx]
+        y = self.tokens[start_idx + 1 : end_idx + 1]
 
         x = torch.tensor(x, dtype=torch.long).view(self.B, self.T)
         y = torch.tensor(y, dtype=torch.long).view(self.B, self.T)
@@ -276,16 +353,31 @@ def cosine_scheduler_lr(
     return min_lr + coeff * (max_lr - min_lr)
 
 
-# model = GPT.from_pretrained("gpt2")
+ddp_info = init_ddp()
 model = GPT(GPTConfig())
 model.to("cuda")
 model = torch.compile(model)
+if ddp_info.is_ddp:
+    model = nn.parallel.DistributedDataParallel(
+        model, device_ids=[ddp_info.local_rank], output_device=ddp_info.local_rank
+    )
 
+total_batch_size = 25600  # in total number of tokens per step. B * T * grad_acum_steps
 B = 5
 T = 512
-train_data_loader = DataLoaderLite(B=B, T=T)
+grad_acum_steps = total_batch_size // (B * T * ddp_info.world_size)
+assert (
+    total_batch_size % (B * T * ddp_info.world_size) == 0
+), "total_batch_size must be divisible by B * T"
+if ddp_info.is_master_process:
+    logger.info(
+        f"Using total batch size: {total_batch_size}, B: {B}, T: {T}, grad_acum_steps: {grad_acum_steps}"
+    )
+
+train_data_loader = DataLoaderLite(
+    B=B, T=T, local_rank=ddp_info.local_rank, world_size=ddp_info.world_size
+)
 n_epochs = 50
-grad_acum_steps = 10
 optimizer = model.configure_optimizer(weight_decay=0.1, learning_rate=6e-4)
 scaler = torch.GradScaler()
 for i in range(n_epochs):
@@ -313,10 +405,12 @@ for i in range(n_epochs):
     torch.cuda.synchronize()
     t_1 = time.time()
 
-    print(
+    logger.info(
         f"step {i + 1}, loss: {loss.item():.4f}, time: {(t_1 - t_0) * 1000} tokens/sec: {B * T * grad_acum_steps / (t_1 - t_0):.2f}, lr: {lr} norm: {norm}"
     )
 
+if ddp_info.is_ddp:
+    dist.destroy_process_group()
 sys.exit(0)
 
 """
